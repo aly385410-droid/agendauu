@@ -1,0 +1,67 @@
+name: Build APK
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare project
+        run: |
+          mkdir proj
+          Z=$(ls JudicialAgenda-Android*.zip 2>/dev/null | head -n1); [ -z "$Z" ] && Z=$(ls *.zip 2>/dev/null | head -n1)
+          if [ -n "$Z" ]; then unzip -q -o "$Z" -d proj; else cp -r . proj/ ; fi
+          if [ ! -f proj/gradlew ] && [ ! -f proj/build.gradle ] && [ ! -f proj/settings.gradle ]; then d=$(dirname "$(find proj -name settings.gradle* | head -n1)"); mv "$d"/* proj/ 2>/dev/null || true; fi
+          ls proj
+      - name: Add OCR engine (runs inside the phone, no PC needed)
+        run: |
+          mkdir ocrtmp && cd ocrtmp && npm init -y >/dev/null && npm install tesseract.js@5.0.0 tesseract.js-core@5.0.0 jsqr@1.4.0 --no-audit --no-fund
+          mkdir -p ../proj/app/src/main/assets/ocr
+          cp node_modules/tesseract.js/dist/tesseract.min.js node_modules/tesseract.js/dist/worker.min.js ../proj/app/src/main/assets/ocr/
+          cp node_modules/tesseract.js-core/tesseract-core*.wasm.js ../proj/app/src/main/assets/ocr/
+          cp node_modules/jsqr/dist/jsQR.js ../proj/app/src/main/assets/ocr/jsQR.js
+          ls -la ../proj/app/src/main/assets/ocr ../proj/app/src/main/assets/ocr/lang
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK packages
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Build debug APK
+        working-directory: proj
+        run: |
+          set +e
+          ok=0
+          for v in 4.9.0 4.7.0 4.6.0 jp-4.9.0 jp-4.7.0 noTess noQr; do
+            case $v in noTess) A='-PnoTess';; noQr) A='-PnoQr';; jp-*) A="-PtessCoord=com.github.adaptech-cz.Tesseract4Android:tesseract4android:${v#jp-}";; *) A="-PtessVer=$v";; esac
+            gradle assembleDebug --no-daemon $A > ../build_$v.log 2>&1
+            if [ $? -eq 0 ]; then
+              ok=1
+              echo "### تم البناء بالخيار: $v (4.x = كامل، noTess = بدون محرك OCR الأصلي، noQr = بدون ماسح QR)" >> $GITHUB_STEP_SUMMARY
+              break
+            fi
+            echo "#### فشل البناء بالخيار $v — سبب الفشل:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E -A8 "What went wrong|error:" ../build_$v.log | head -30 >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            gradle clean --no-daemon -q > /dev/null 2>&1
+          done
+          if [ $ok -eq 0 ]; then
+            echo "::warning::فشل البناء الكامل — جاري البناء بدون المكتبات الأصلية"
+            gradle clean assembleDebug --no-daemon -PnoNative || exit 1
+            echo "### ⚠️ بناء مبسّط: بدون محرك OCR الأصلي وماسح QR" >> $GITHUB_STEP_SUMMARY
+          fi
+      - name: Verify what is inside the APK
+        run: |
+          APK=$(ls proj/app/build/outputs/apk/debug/*.apk | head -n1)
+          mkdir apkx && cd apkx && unzip -q -o "../$APK"
+          T=no; Q=no; L=no
+          grep -l -a "TessBaseAPI" classes*.dex >/dev/null 2>&1 && T=yes
+          grep -l -a "barcodescanner/CaptureActivit
