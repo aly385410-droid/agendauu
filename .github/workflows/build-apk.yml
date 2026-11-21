@@ -59,9 +59,35 @@ jobs:
             echo "### ⚠️ بناء مبسّط: بدون محرك OCR الأصلي وماسح QR" >> $GITHUB_STEP_SUMMARY
           fi
       - name: Verify what is inside the APK
+        continue-on-error: true
         run: |
-          APK=$(ls proj/app/build/outputs/apk/debug/*.apk | head -n1)
-          mkdir apkx && cd apkx && unzip -q -o "../$APK"
+          set +e
+          ROOT=$PWD
+          APK=$(ls $ROOT/proj/app/build/outputs/apk/debug/*.apk | head -n1)
+          mkdir -p $ROOT/apkx && cd $ROOT/apkx
+          unzip -q -o "$APK" || true
           T=no; Q=no; L=no
           grep -l -a "TessBaseAPI" classes*.dex >/dev/null 2>&1 && T=yes
-          grep -l -a "barcodescanner/CaptureActivit
+          grep -l -a "barcodescanner/CaptureActivity" classes*.dex >/dev/null 2>&1 && Q=yes
+          ls lib/*/libtesseract* lib/*/liblept* >/dev/null 2>&1 && L=yes
+          J=no; [ -f $ROOT/proj/app/src/main/assets/ocr/jsQR.js ] && J=yes
+          echo "### فحص محتوى الـ APK" >> $GITHUB_STEP_SUMMARY
+          echo "- محرك قراءة النصوص الأصلي (Tesseract) داخل التطبيق: **$T** (مكتباته الأصلية: $L)" >> $GITHUB_STEP_SUMMARY
+          echo "- ماسح QR الأصلي: **$Q**" >> $GITHUB_STEP_SUMMARY
+          echo "- ماسح QR البديل (jsQR): $J" >> $GITHUB_STEP_SUMMARY
+          exit 0
+      - name: Rename APK
+        run: cp proj/app/build/outputs/apk/debug/*.apk JudicialAssistant.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JudicialAgenda-APK
+          path: JudicialAssistant.apk
+      - name: Publish release with download link
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="apk-${{ github.run_number }}"
+          gh release create "$TAG" JudicialAssistant.apk --title "المساعد القضائي — نسخة $TAG" --notes "حمّل الملف JudicialAssistant.apk وثبّته على الهاتف"
+          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/JudicialAssistant.apk"
+          echo "### رابط تحميل الـ APK" >> $GITHUB_STEP_SUMMARY
+          echo "$URL" >> $GITHUB_STEP_SUMMARY
